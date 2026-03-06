@@ -47,8 +47,6 @@ type Container struct {
         LastModified string `json:"lastModified"`
 }
 
-
-
 // GetContainerRegistry lists all container images using containerd
 func GetContainerRegistry(w http.ResponseWriter, r *http.Request) {
         ctx := context.Background()
@@ -56,7 +54,7 @@ func GetContainerRegistry(w http.ResponseWriter, r *http.Request) {
         // Use the "default" namespace for containerd operations
         ctx = namespaces.WithNamespace(ctx, "default")
 
-        // Connect to containerd socket (usually /run/containerd/containerd.sock)
+        // Connect to containerd socket
         cli, err := containerd.New("/run/containerd/containerd.sock")
         if err != nil {
                 http.Error(w, fmt.Sprintf("Failed to connect to containerd: %v", err), http.StatusInternalServerError)
@@ -74,10 +72,7 @@ func GetContainerRegistry(w http.ResponseWriter, r *http.Request) {
         // Convert containerd images to the format expected by the frontend
         var result []ImageInfo
         for _, img := range imageList {
-                // Get image size
                 size := img.Target.Size
-
-                // Parse tags from image name
                 tags := []string{img.Name}
 
                 imageInfo := ImageInfo{
@@ -97,7 +92,6 @@ func GetContainerRegistry(w http.ResponseWriter, r *http.Request) {
                 result = append(result, imageInfo)
         }
 
-        // Encode the images as JSON and write to response
         w.Header().Set("Content-Type", "application/json")
         if err := json.NewEncoder(w).Encode(result); err != nil {
                 http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -132,7 +126,6 @@ func ListBlobContainers(w http.ResponseWriter, r *http.Request) {
                         continue
                 }
 
-                // Count objects and calculate total size
                 files, _ := os.ReadDir(containerPath)
                 objectCount := 0
                 var totalSize int64
@@ -170,7 +163,6 @@ func GetBlobBuckets(w http.ResponseWriter, r *http.Request) {
                 return
         }
 
-        // Check if a specific container is requested via query parameter
         containerFilter := r.URL.Query().Get("container")
 
         root := filepath.Join(home, ".opencloud", "blob_storage")
@@ -186,7 +178,6 @@ func GetBlobBuckets(w http.ResponseWriter, r *http.Request) {
                         continue
                 }
 
-                // Skip if a specific container is requested and this isn't it
                 if containerFilter != "" && container.Name() != containerFilter {
                         continue
                 }
@@ -201,7 +192,7 @@ func GetBlobBuckets(w http.ResponseWriter, r *http.Request) {
                         info, _ := os.Stat(filepath.Join(containerPath, file.Name()))
 
                         blobs = append(blobs, Blob{
-                                ID:           fmt.Sprintf("%s-%s", container.Name(), file.Name()), // simple unique ID
+                                ID:           fmt.Sprintf("%s-%s", container.Name(), file.Name()),
                                 Name:         file.Name(),
                                 Size:         info.Size(),
                                 ContentType:  mime.TypeByExtension(filepath.Ext(file.Name())),
@@ -218,12 +209,12 @@ func GetBlobBuckets(w http.ResponseWriter, r *http.Request) {
 // CreateBucket creates a new blob storage container
 func CreateBucket(w http.ResponseWriter, r *http.Request) {
         var body struct {
-        Name string `json:"name"`
-    }
-    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-        http.Error(w, "Invalid request", http.StatusBadRequest)
-        return
-    }
+                Name string `json:"name"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+                http.Error(w, "Invalid request", http.StatusBadRequest)
+                return
+        }
 
         home, err := os.UserHomeDir()
         if err != nil {
@@ -232,6 +223,7 @@ func CreateBucket(w http.ResponseWriter, r *http.Request) {
         }
 
         bucketPath := filepath.Join(home, ".opencloud", "blob_storage", body.Name)
+        os.MkdirAll(filepath.Join(home, ".opencloud", "blob_storage"), 0755)
         if err := os.Mkdir(bucketPath, 0755); err != nil {
                 http.Error(w, "Failed to create container", http.StatusInternalServerError)
                 return
@@ -243,80 +235,89 @@ func CreateBucket(w http.ResponseWriter, r *http.Request) {
 
 // UploadObject uploads a file to a blob storage container
 func UploadObject(w http.ResponseWriter, r *http.Request) {
-    err := r.ParseMultipartForm(10 << 20) // 10MB limit
-    if err != nil {
-        http.Error(w, "Error parsing form data", http.StatusBadRequest)
-        return
-    }
+        err := r.ParseMultipartForm(100 << 20) // 10MB limit
+        if err != nil {
+                http.Error(w, "Error parsing form data", http.StatusBadRequest)
+                return
+        }
 
-    container := r.FormValue("container")
-    file, handler, err := r.FormFile("file")
-    if err != nil {
-        http.Error(w, "Error retrieving file", http.StatusBadRequest)
-        return
-    }
-    defer file.Close()
+        container := r.FormValue("container")
+        file, handler, err := r.FormFile("file")
+        if err != nil {
+                http.Error(w, "Error retrieving file", http.StatusBadRequest)
+                return
+        }
+        defer file.Close()
 
-    home, _ := os.UserHomeDir()
-    containerPath := filepath.Join(home, ".opencloud", "blob_storage", container)
-    os.MkdirAll(containerPath, 0755)
+        home, _ := os.UserHomeDir()
+        containerPath := filepath.Join(home, ".opencloud", "blob_storage", container)
+        os.MkdirAll(containerPath, 0755)
 
-    dst, err := os.Create(filepath.Join(containerPath, handler.Filename))
-    if err != nil {
-        http.Error(w, "Error creating file", http.StatusInternalServerError)
-        return
-    }
-    defer dst.Close()
+        dst, err := os.Create(filepath.Join(containerPath, handler.Filename))
+        if err != nil {
+                http.Error(w, "Error creating file", http.StatusInternalServerError)
+                return
+        }
+        defer dst.Close()
 
-    io.Copy(dst, file)
+        io.Copy(dst, file)
 
-    w.WriteHeader(http.StatusCreated)
-    json.NewEncoder(w).Encode(map[string]string{
-        "status": "ok",
-        "filename": handler.Filename,
-        "container": container,
+        w.WriteHeader(http.StatusCreated)
+        json.NewEncoder(w).Encode(map[string]string{
+                "status":    "ok",
+                "filename":  handler.Filename,
+                "container": container,
         })
 }
 
 // DeleteObject deletes a file from blob storage
 func DeleteObject(w http.ResponseWriter, r *http.Request) {
-    var req struct {
-        Container string `json:"container"`
-        Name      string `json:"name"`
-    }
-
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        http.Error(w, "Invalid request body", http.StatusBadRequest)
-        return
-    }
-
-    home, _ := os.UserHomeDir()
-    filePath := filepath.Join(home, ".opencloud", "blob_storage", req.Container, req.Name)
-
-    if err := os.Remove(filePath); err != nil {
-        if os.IsNotExist(err) {
-            http.Error(w, "File not found", http.StatusNotFound)
-            return
+        var req struct {
+                Container string `json:"container"`
+                Name      string `json:"name"`
         }
-        http.Error(w, "Error deleting file", http.StatusInternalServerError)
-        return
-    }
 
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]string{
-        "status":    "deleted",
-        "container": req.Container,
-        "name":      req.Name,
-    })
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid request body", http.StatusBadRequest)
+                return
+        }
+
+        home, _ := os.UserHomeDir()
+        filePath := filepath.Join(home, ".opencloud", "blob_storage", req.Container, req.Name)
+
+        if err := os.Remove(filePath); err != nil {
+                if os.IsNotExist(err) {
+                        http.Error(w, "File not found", http.StatusNotFound)
+                        return
+                }
+                http.Error(w, "Error deleting file", http.StatusInternalServerError)
+                return
+        }
+
+        w.WriteHeader(http.StatusOK)
+        json.NewEncoder(w).Encode(map[string]string{
+                "status":    "deleted",
+                "container": req.Container,
+                "name":      req.Name,
+        })
 }
 
-// BuildRequest represents the JSON payload for building a container image
+// BuildRequest represents the JSON payload for building a container image.
+// Supports both the main UI (page.tsx) and legacy service-quick-actions.tsx formats.
 type BuildRequest struct {
-        ImageName  string   `json:"image_name"`
-        BaseImage  string   `json:"base_image"`
-        Maintainer string   `json:"maintainer"`
-        Commands   []string `json:"commands"`
-        Entrypoint []string `json:"entrypoint"`
+        // Fields from page.tsx "Build from Dockerfile" dialog
+        Dockerfile string `json:"dockerfile"` // raw Dockerfile content
+        ImageName  string `json:"imageName"`  // e.g. "my-app:latest"
+        Context    string `json:"context"`    // ignored server-side, we use tmpDir
+        Nocache    bool   `json:"nocache"`    // --no-cache flag
+        Platform   string `json:"platform"`   // e.g. "linux/amd64"
+
+        // Legacy fields from service-quick-actions.tsx (BuildDockerCard)
+        LegacyImageName string   `json:"image_name"`
+        BaseImage       string   `json:"base_image"`
+        Maintainer      string   `json:"maintainer"`
+        Commands        []string `json:"commands"`
+        Entrypoint      []string `json:"entrypoint"`
 }
 
 // normalizeImageRef adds docker.io registry prefix if no registry is specified
@@ -331,127 +332,150 @@ func normalizeImageRef(imageRef string) string {
         return "docker.io/library/" + imageRef
 }
 
-
-// BuildImage handles building a container image using buildkitd and registers it with Containerd.
+// BuildImage handles building a container image using buildkitd and registers it with containerd.
 func BuildImage(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
+        if r.Method != http.MethodPost {
+                http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+                return
+        }
 
-	var req BuildRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
-		return
-	}
+        var req BuildRequest
+        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+                http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+                return
+        }
 
-	if req.ImageName == "" || req.BaseImage == "" {
-		http.Error(w, "image_name and base_image are required", http.StatusBadRequest)
-		return
-	}
+        // Resolve image name — support both frontend formats
+        imageName := req.ImageName
+        if imageName == "" {
+                imageName = req.LegacyImageName
+        }
+        if imageName == "" {
+                http.Error(w, "imageName is required", http.StatusBadRequest)
+                return
+        }
 
-	normalized := strings.ToLower(req.ImageName)
-	if !imageNamePatternLower.MatchString(normalized) && !imageNamePatternMixed.MatchString(req.ImageName) {
-		http.Error(w, "Invalid image name format", http.StatusBadRequest)
-		return
-	}
+        // Validate image name
+        normalized := strings.ToLower(imageName)
+        if !imageNamePatternLower.MatchString(normalized) && !imageNamePatternMixed.MatchString(imageName) {
+                http.Error(w, "Invalid image name format", http.StatusBadRequest)
+                return
+        }
 
-	baseImageRef := normalizeImageRef(req.BaseImage)
+        // Build Dockerfile content from either raw content or legacy fields
+        var dockerfileContent string
+        if req.Dockerfile != "" {
+                // Main UI path: raw Dockerfile content provided directly
+                dockerfileContent = req.Dockerfile
+        } else if req.BaseImage != "" {
+                // Legacy path: generate Dockerfile from base_image + commands
+                var dfBuilder strings.Builder
+                dfBuilder.WriteString(fmt.Sprintf("FROM %s\n", normalizeImageRef(req.BaseImage)))
+                if req.Maintainer != "" {
+                        dfBuilder.WriteString(fmt.Sprintf("LABEL maintainer=\"%s\"\n", req.Maintainer))
+                }
+                for _, cmd := range req.Commands {
+                        dfBuilder.WriteString(fmt.Sprintf("RUN %s\n", cmd))
+                }
+                if len(req.Entrypoint) > 0 {
+                        ep, _ := json.Marshal(req.Entrypoint)
+                        dfBuilder.WriteString(fmt.Sprintf("ENTRYPOINT %s\n", string(ep)))
+                }
+                dockerfileContent = dfBuilder.String()
+        } else {
+                http.Error(w, "Either 'dockerfile' content or 'base_image' is required", http.StatusBadRequest)
+                return
+        }
 
-	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "opencloud-build-*")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create temp build context: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer os.RemoveAll(tmpDir)
+        // Create temp directory for build context
+        tmpDir, err := os.MkdirTemp("", "opencloud-build-*")
+        if err != nil {
+                http.Error(w, fmt.Sprintf("Failed to create temp build context: %v", err), http.StatusInternalServerError)
+                return
+        }
+        defer os.RemoveAll(tmpDir)
 
-	// Generate Dockerfile
-	var dfBuilder strings.Builder
-	dfBuilder.WriteString(fmt.Sprintf("FROM %s\n", baseImageRef))
-	
-	if req.Maintainer != "" {
-		dfBuilder.WriteString(fmt.Sprintf("LABEL maintainer=\"%s\"\n", req.Maintainer))
-	}
-	
-	for _, cmd := range req.Commands {
-		dfBuilder.WriteString(fmt.Sprintf("RUN %s\n", cmd))
-	}
-	
-	if len(req.Entrypoint) > 0 {
-		ep, _ := json.Marshal(req.Entrypoint)
-		dfBuilder.WriteString(fmt.Sprintf("ENTRYPOINT %s\n", string(ep)))
-	}
+        // Write Dockerfile into temp dir
+        if err := os.WriteFile(filepath.Join(tmpDir, "Dockerfile"), []byte(dockerfileContent), 0644); err != nil {
+                http.Error(w, fmt.Sprintf("Failed to write Dockerfile: %v", err), http.StatusInternalServerError)
+                return
+        }
 
-	dfPath := filepath.Join(tmpDir, "Dockerfile")
-	if err := os.WriteFile(dfPath, []byte(dfBuilder.String()), 0644); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to write Dockerfile: %v", err), http.StatusInternalServerError)
-		return
-	}
+        // Output tar path
+        dockerTar := filepath.Join(tmpDir, "image.tar")
 
-	// Use buildctl to build and push directly to containerd
-	// This avoids the OCI tar export issue
-	buildCmd := exec.Command(
-		"buildctl",
-		"--addr", "unix:///run/buildkit/buildkitd.sock",
-		"build",
-		"--frontend", "dockerfile.v0",
-		"--local", "context="+tmpDir,
-		"--local", "dockerfile="+tmpDir,
-		"--output", "type=image,name="+req.ImageName+",push=false",
-	)
-	
-	if out, err := buildCmd.CombinedOutput(); err != nil {
-		http.Error(w, fmt.Sprintf("Build failed: %v\nOutput: %s", err, string(out)), http.StatusInternalServerError)
-		return
-	}
+        // Build buildctl args
+        buildArgs := []string{
+                "--addr", "unix:///run/buildkit/buildkitd.sock",
+                "build",
+                "--frontend", "dockerfile.v0",
+                "--local", "context=" + tmpDir,
+                "--local", "dockerfile=" + tmpDir,
+                "--output", "type=docker,name=" + imageName + ",dest=" + dockerTar,
+        }
 
-	resp := map[string]string{
-		"status":    "success",
-		"message":   fmt.Sprintf("Image %s built successfully", req.ImageName),
-		"imageName": req.ImageName,
-	}
+        // Optional platform (e.g. "linux/amd64")
+        if req.Platform != "" {
+                buildArgs = append(buildArgs, "--opt", "platform="+req.Platform)
+        }
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+        // Optional no-cache
+        if req.Nocache {
+                buildArgs = append(buildArgs, "--no-cache")
+        }
+
+        // Run buildctl
+        if out, err := exec.Command("buildctl", buildArgs...).CombinedOutput(); err != nil {
+                http.Error(w, fmt.Sprintf("Build failed: %v\nOutput: %s", err, string(out)), http.StatusInternalServerError)
+                return
+        }
+
+        // Import Docker tar into containerd
+        if out, err := exec.Command("ctr", "--namespace", "default", "images", "import", dockerTar).CombinedOutput(); err != nil {
+                http.Error(w, fmt.Sprintf("Import into containerd failed: %v\nOutput: %s", err, string(out)), http.StatusInternalServerError)
+                return
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]string{
+                "status":    "success",
+                "message":   fmt.Sprintf("Image %s built successfully", imageName),
+                "imageName": imageName,
+        })
 }
 
 // DownloadObject downloads a file from blob storage
 func DownloadObject(w http.ResponseWriter, r *http.Request) {
-    if r.Method != http.MethodPost {
-        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-        return
-    }
+        if r.Method != http.MethodPost {
+                http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+                return
+        }
 
-    // Decode JSON body into a map
-    var body map[string]string
-    if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-        http.Error(w, "Invalid request body", http.StatusBadRequest)
-        return
-    }
+        var body map[string]string
+        if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+                http.Error(w, "Invalid request body", http.StatusBadRequest)
+                return
+        }
 
-    container, ok1 := body["container"]
-    name, ok2 := body["name"]
-    if !ok1 || !ok2 || container == "" || name == "" {
-        http.Error(w, "Missing container or name", http.StatusBadRequest)
-        return
-    }
+        container, ok1 := body["container"]
+        name, ok2 := body["name"]
+        if !ok1 || !ok2 || container == "" || name == "" {
+                http.Error(w, "Missing container or name", http.StatusBadRequest)
+                return
+        }
 
-    // Adjust this path to match your storage layout
         home, _ := os.UserHomeDir()
-    filePath := filepath.Join(home, ".opencloud", "blob_storage", container, name)
+        filePath := filepath.Join(home, ".opencloud", "blob_storage", container, name)
 
-    file, err := os.Open(filePath)
-    if err != nil {
-        http.Error(w, "File not found", http.StatusNotFound)
-        return
-    }
-    defer file.Close()
+        file, err := os.Open(filePath)
+        if err != nil {
+                http.Error(w, "File not found", http.StatusNotFound)
+                return
+        }
+        defer file.Close()
 
-    // Set headers so the browser downloads the file
-    w.Header().Set("Content-Disposition", "attachment; filename="+name)
-    w.Header().Set("Content-Type", "application/octet-stream")
+        w.Header().Set("Content-Disposition", "attachment; filename="+name)
+        w.Header().Set("Content-Type", "application/octet-stream")
 
-    // Serve the file
-    http.ServeFile(w, r, filePath)
+        http.ServeFile(w, r, filePath)
 }
